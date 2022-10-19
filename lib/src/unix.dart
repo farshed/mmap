@@ -1,318 +1,180 @@
-// extern crate libc;
+// ignore_for_file: non_constant_identifier_names
+
+import 'dart:ffi';
+import 'dart:io';
+import 'dart:typed_data';
 import 'package:stdlibc/stdlibc.dart' as libc;
 
+/// Some commonly used properties.
+///
+/// `String path`: Path to the file that'll be mapped memory.
+///
+/// `int offset`: Byte offset of file to begin mapping from. Defaults to 0.
+///
+/// `int? length`: Number of bytes to map. Defaults to file size if your map is file-backed.
+///
+/// `bool readAhead`: Should read-ahead the file or not.
+/// Populates (prefault) page tables for mapping. Defaults to false.
+///
+/// `bool executable`: Whether buffer memory should be executable.
+///
+class Mmap {
+  static final PROT_EXEC = libc.PROT_EXEC;
+  static final PROT_NONE = libc.PROT_NONE;
+  static final PROT_READ = libc.PROT_READ;
+  static final PROT_WRITE = libc.PROT_WRITE;
 
-use std::fs::File;
-use std::mem::ManuallyDrop;
-use std::os::unix::io::{FromRawFd, RawFd};
-use std::sync::atomic::{AtomicUsize, Ordering};
-use std::{io, ptr};
+  static final MAP_FILE = libc.MAP_FILE;
+  static final MAP_STACK = libc.MAP_STACK;
+  static final MAP_FIXED = libc.MAP_FIXED;
+  static final MAP_SHARED = libc.MAP_SHARED;
+  static final MAP_LOCKED = libc.MAP_LOCKED;
+  static final MAP_PRIVATE = libc.MAP_PRIVATE;
+  static final MAP_POPULATE = libc.MAP_POPULATE;
+  static final MAP_ANONYMOUS = libc.MAP_ANONYMOUS;
 
-use crate::advice::Advice;
+  /// Creates a read-only memory-mapped buffer from a file.
+  Mmap.readOnly(
+    String path, {
+    int offset = 0,
+    int? length,
+    bool readAhead = false,
+    bool executable = false,
+  }) {
+    final len = length ?? File(path).lengthSync();
+    int prot = PROT_READ;
+    if (executable) prot |= PROT_EXEC;
 
+    int flags = MAP_FILE;
+    if (readAhead) flags |= MAP_POPULATE;
 
+    final map = _mmap(null, len, prot, flags, path, offset);
+    if (map != null) _map = map;
+  }
 
-#[cfg(any(
-    all(target_os = "linux", not(target_arch = "mips")),
-    target_os = "freebsd",
-    target_os = "android"
-))]
-const MAP_STACK: libc::c_int = libc::MAP_STACK;
+  /// Creates a mutable memory-mapped buffer from a file.
+  ///
+  /// `bool copyOnWrite`: By default, any changes to the buffer's content
+  /// are synced and carried through to the underlying file.
+  /// Setting `copyOnWrite` to 'true' allows you to edit the buffer
+  ///  without causing any changes in the source file.
+  /// All the changes are instead held in memory/swap space.
+  ///
+  Mmap.writable(
+    String path, {
+    int offset = 0,
+    int? length,
+    bool readAhead = false,
+    bool executable = false,
+    bool copyOnWrite = false,
+  }) {
+    final len = length ?? File(path).lengthSync();
+    int prot = PROT_READ | PROT_WRITE;
+    if (executable) prot |= PROT_EXEC;
 
-#[cfg(not(any(
-    all(target_os = "linux", not(target_arch = "mips")),
-    target_os = "freebsd",
-    target_os = "android"
-)))]
-const MAP_STACK: libc::c_int = 0;
+    int flags = MAP_FILE | (copyOnWrite ? MAP_PRIVATE : MAP_SHARED);
+    if (readAhead) flags |= MAP_POPULATE;
 
-#[cfg(any(target_os = "linux", target_os = "android"))]
-const MAP_POPULATE: libc::c_int = libc::MAP_POPULATE;
+    final map = _mmap(null, len, prot, flags, path, offset);
+    if (map != null) _map = map;
+  }
 
-#[cfg(not(any(target_os = "linux", target_os = "android")))]
-const MAP_POPULATE: libc::c_int = 0;
+  /// Creates an memory-mapped buffer that is not backed by any file.
+  ///
+  /// Anonymous maps can be used as in-memory cache
+  /// or to share memory between process/threads.
+  ///
+  /// `int length`: Explicit length is required anonymous mappings.
+  ///
+  /// `bool shared`: Should the map be shareable with other processes.
+  ///
+  /// `bool hintForStack`: Hint kernel that an address mapping suitable
+  /// for a process or thread stack is needed.
+  ///
+  Mmap.anonymous({
+    required int length,
+    bool shared = true,
+    bool hintForStack = false,
+    bool executable = false,
+  }) {
+    int prots = PROT_READ | PROT_WRITE;
+    if (executable) prots |= PROT_EXEC;
 
-pub struct MmapInner {
-    ptr: *mut libc::c_void,
-    len: usize,
-}
+    int flags = MAP_ANONYMOUS | MAP_SHARED;
+    if (hintForStack) flags |= MAP_STACK;
 
-impl MmapInner {
-    /// Creates a new `MmapInner`.
-    ///
-    /// This is a thin wrapper around the `mmap` sytem call.
-    fn new(
-        len: usize,
-        prot: libc::c_int,
-        flags: libc::c_int,
-        file: RawFd,
-        offset: u64,
-    ) -> io::Result<MmapInner> {
-        let alignment = offset % page_size() as u64;
-        let aligned_offset = offset - alignment;
-        let aligned_len = len + alignment as usize;
+    final map = _mmap(null, length, prots, flags, null, 0);
+    if (map != null) _map = map;
+  }
 
-        // `libc::mmap` does not support zero-size mappings. POSIX defines:
-        //
-        // https://pubs.opengroup.org/onlinepubs/9699919799/functions/mmap.html
-        // > If `len` is zero, `mmap()` shall fail and no mapping shall be established.
-        //
-        // So if we would create such a mapping, crate a one-byte mapping instead:
-        let aligned_len = aligned_len.max(1);
+  /// Creates a custom memory-mapped buffer.
+  ///
+  /// This constructor closely mirrors Unix's `mmap()` syscall to allow more detailed control.
+  ///
+  /// `int? address`: Preffered address for the buffer.
+  ///
+  /// `int prot`: Memory protection for the mapping.
+  ///
+  /// `int flags`: Flags allow fine control over mapping's behavior.
+  ///
+  /// `File? fileDesc`: A File object that refers to the source file
+  ///  (If this map is file-backed).
+  ///
+  Mmap.custom({
+    int? address,
+    required int length,
+    required int prot,
+    required int flags,
+    File? fileDesc,
+    int offset = 0,
+  }) {
+    final map = _mmap(address, length, prot, flags, fileDesc?.path, offset);
+    if (map != null) _map = map;
+  }
 
-        // Note that in that case `MmapInner::len` is still set to zero,
-        // and `Mmap` will still dereferences to an empty slice.
-        //
-        // If this mapping is backed by an empty file, we create a mapping larger than the file.
-        // This is unusual but well-defined. On the same man page, POSIX further defines:
-        //
-        // > The `mmap()` function can be used to map a region of memory that is larger
-        // > than the current size of the object.
-        //
-        // (The object here is the file.)
-        //
-        // > Memory access within the mapping but beyond the current end of the underlying
-        // > objects may result in SIGBUS signals being sent to the process. The reason for this
-        // > is that the size of the object can be manipulated by other processes and can change
-        // > at any moment. The implementation should tell the application that a memory reference
-        // > is outside the object where this can be detected; otherwise, written data may be lost
-        // > and read data may not reflect actual data in the object.
-        //
-        // Because `MmapInner::len` is not incremented, this increment of `aligned_len`
-        // will not allow accesses past the end of the file and will not cause SIGBUS.
-        //
-        // (SIGBUS is still possible by mapping a non-empty file and then truncating it
-        // to a shorter size, but that is unrelated to this handling of empty files.)
+  late int _length;
+  late libc.Mmap _map;
 
-        unsafe {
-            let ptr = libc::mmap(
-                ptr::null_mut(),
-                aligned_len as libc::size_t,
-                prot,
-                flags,
-                file,
-                aligned_offset as libc::off_t,
-            );
+  int get length => _length;
 
-            if ptr == libc::MAP_FAILED {
-                Err(io::Error::last_os_error())
-            } else {
-                Ok(MmapInner {
-                    ptr: ptr.offset(alignment as isize),
-                    len,
-                })
-            }
-        }
-    }
+  Pointer<Void> get ptr => Pointer.fromAddress(_map.address);
 
-    pub fn map(len: usize, file: RawFd, offset: u64, populate: bool) -> io::Result<MmapInner> {
-        let populate = if populate { MAP_POPULATE } else { 0 };
-        MmapInner::new(
-            len,
-            libc::PROT_READ,
-            libc::MAP_SHARED | populate,
-            file,
-            offset,
-        )
-    }
+  libc.Mmap? _mmap(
+      int? addr, int len, int prot, int flags, String? fp, int offset) {
+    final fd = fp == null ? -1 : libc.open(fp, flags: 0);
+    _length = len;
 
-    pub fn map_exec(len: usize, file: RawFd, offset: u64, populate: bool) -> io::Result<MmapInner> {
-        let populate = if populate { MAP_POPULATE } else { 0 };
-        MmapInner::new(
-            len,
-            libc::PROT_READ | libc::PROT_EXEC,
-            libc::MAP_SHARED | populate,
-            file,
-            offset,
-        )
-    }
+    final map = libc.mmap(
+      address: addr,
+      prot: prot,
+      flags: flags,
+      length: len,
+      offset: offset,
+      fd: fd,
+    );
 
-    pub fn map_mut(len: usize, file: RawFd, offset: u64, populate: bool) -> io::Result<MmapInner> {
-        let populate = if populate { MAP_POPULATE } else { 0 };
-        MmapInner::new(
-            len,
-            libc::PROT_READ | libc::PROT_WRITE,
-            libc::MAP_SHARED | populate,
-            file,
-            offset,
-        )
-    }
+    if (fd > -1) libc.close(fd);
+    return map;
+  }
 
-    pub fn map_copy(len: usize, file: RawFd, offset: u64, populate: bool) -> io::Result<MmapInner> {
-        let populate = if populate { MAP_POPULATE } else { 0 };
-        MmapInner::new(
-            len,
-            libc::PROT_READ | libc::PROT_WRITE,
-            libc::MAP_PRIVATE | populate,
-            file,
-            offset,
-        )
-    }
+  void flush() => libc.sync();
 
-    pub fn map_copy_read_only(
-        len: usize,
-        file: RawFd,
-        offset: u64,
-        populate: bool,
-    ) -> io::Result<MmapInner> {
-        let populate = if populate { MAP_POPULATE } else { 0 };
-        MmapInner::new(
-            len,
-            libc::PROT_READ,
-            libc::MAP_PRIVATE | populate,
-            file,
-            offset,
-        )
-    }
+  void close() {
+    libc.munmap(_map);
+  }
 
-    /// Open an anonymous memory map.
-    pub fn map_anon(len: usize, stack: bool) -> io::Result<MmapInner> {
-        let stack = if stack { MAP_STACK } else { 0 };
-        MmapInner::new(
-            len,
-            libc::PROT_READ | libc::PROT_WRITE,
-            libc::MAP_PRIVATE | libc::MAP_ANON | stack,
-            -1,
-            0,
-        )
-    }
+  Uint8List asBytes() => asUint8List();
 
-    pub fn flush(&self, offset: usize, len: usize) -> io::Result<()> {
-        let alignment = (self.ptr as usize + offset) % page_size();
-        let offset = offset as isize - alignment as isize;
-        let len = len + alignment;
-        let result =
-            unsafe { libc::msync(self.ptr.offset(offset), len as libc::size_t, libc::MS_SYNC) };
-        if result == 0 {
-            Ok(())
-        } else {
-            Err(io::Error::last_os_error())
-        }
-    }
+  Uint8List asUint8List() => ptr.cast<Uint8>().asTypedList(_length);
+  Uint16List asUint16List() => ptr.cast<Uint16>().asTypedList(_length ~/ 2);
+  Uint32List asUint32List() => ptr.cast<Uint32>().asTypedList(_length ~/ 4);
+  Uint64List asUint64List() => ptr.cast<Uint64>().asTypedList(_length ~/ 8);
 
-    pub fn flush_async(&self, offset: usize, len: usize) -> io::Result<()> {
-        let alignment = (self.ptr as usize + offset) % page_size();
-        let offset = offset as isize - alignment as isize;
-        let len = len + alignment;
-        let result =
-            unsafe { libc::msync(self.ptr.offset(offset), len as libc::size_t, libc::MS_ASYNC) };
-        if result == 0 {
-            Ok(())
-        } else {
-            Err(io::Error::last_os_error())
-        }
-    }
+  Int8List asInt8List() => ptr.cast<Int8>().asTypedList(_length);
+  Int16List asInt16List() => ptr.cast<Int16>().asTypedList(_length ~/ 2);
+  Int32List asInt32List() => ptr.cast<Int32>().asTypedList(_length ~/ 4);
+  Int64List asInt64List() => ptr.cast<Int64>().asTypedList(_length ~/ 8);
 
-    fn mprotect(&mut self, prot: libc::c_int) -> io::Result<()> {
-        unsafe {
-            let alignment = self.ptr as usize % page_size();
-            let ptr = self.ptr.offset(-(alignment as isize));
-            let len = self.len + alignment;
-            let len = len.max(1);
-            if libc::mprotect(ptr, len, prot) == 0 {
-                Ok(())
-            } else {
-                Err(io::Error::last_os_error())
-            }
-        }
-    }
-
-    pub fn make_read_only(&mut self) -> io::Result<()> {
-        self.mprotect(libc::PROT_READ)
-    }
-
-    pub fn make_exec(&mut self) -> io::Result<()> {
-        self.mprotect(libc::PROT_READ | libc::PROT_EXEC)
-    }
-
-    pub fn make_mut(&mut self) -> io::Result<()> {
-        self.mprotect(libc::PROT_READ | libc::PROT_WRITE)
-    }
-
-    #[inline]
-    pub fn ptr(&self) -> *const u8 {
-        self.ptr as *const u8
-    }
-
-    #[inline]
-    pub fn mut_ptr(&mut self) -> *mut u8 {
-        self.ptr as *mut u8
-    }
-
-    #[inline]
-    pub fn len(&self) -> usize {
-        self.len
-    }
-
-    pub fn advise(&self, advice: Advice) -> io::Result<()> {
-        unsafe {
-            if libc::madvise(self.ptr, self.len, advice as i32) != 0 {
-                Err(io::Error::last_os_error())
-            } else {
-                Ok(())
-            }
-        }
-    }
-
-    pub fn lock(&self) -> io::Result<()> {
-        unsafe {
-            if libc::mlock(self.ptr, self.len) != 0 {
-                Err(io::Error::last_os_error())
-            } else {
-                Ok(())
-            }
-        }
-    }
-
-    pub fn unlock(&self) -> io::Result<()> {
-        unsafe {
-            if libc::munlock(self.ptr, self.len) != 0 {
-                Err(io::Error::last_os_error())
-            } else {
-                Ok(())
-            }
-        }
-    }
-}
-
-impl Drop for MmapInner {
-    fn drop(&mut self) {
-        let alignment = self.ptr as usize % page_size();
-        let len = self.len + alignment;
-        let len = len.max(1);
-        // Any errors during unmapping/closing are ignored as the only way
-        // to report them would be through panicking which is highly discouraged
-        // in Drop impls, c.f. https://github.com/rust-lang/lang-team/issues/97
-        unsafe {
-            let ptr = self.ptr.offset(-(alignment as isize));
-            libc::munmap(ptr, len as libc::size_t);
-        }
-    }
-}
-
-unsafe impl Sync for MmapInner {}
-unsafe impl Send for MmapInner {}
-
-fn page_size() -> usize {
-    static PAGE_SIZE: AtomicUsize = AtomicUsize::new(0);
-
-    match PAGE_SIZE.load(Ordering::Relaxed) {
-        0 => {
-            let page_size = unsafe { libc::sysconf(libc::_SC_PAGESIZE) as usize };
-
-            PAGE_SIZE.store(page_size, Ordering::Relaxed);
-
-            page_size
-        }
-        page_size => page_size,
-    }
-}
-
-pub fn file_len(file: RawFd) -> io::Result<u64> {
-    // SAFETY: We must not close the passed-in fd by dropping the File we create,
-    // we ensure this by immediately wrapping it in a ManuallyDrop.
-    unsafe {
-        let file = ManuallyDrop::new(File::from_raw_fd(file));
-        Ok(file.metadata()?.len())
-    }
+  Float32List asFloat32List() => ptr.cast<Float>().asTypedList(_length ~/ 4);
+  Float64List asFloat64List() => ptr.cast<Double>().asTypedList(_length ~/ 8);
 }
