@@ -54,9 +54,9 @@ class Mmap {
 
   /// Creates a mutable memory-mapped buffer from a file.
   ///
-  /// `bool copyOnWrite`: By default, any changes to the buffer's content
+  /// [copyOnWrite]: By default, any changes to the buffer's content
   /// are synced and carried through to the underlying file.
-  /// Setting `copyOnWrite` to 'true' allows you to edit the buffer
+  /// Setting [copyOnWrite] to 'true' allows you to edit the buffer
   ///  without causing any changes in the source file.
   /// All the changes are instead held in memory/swap space.
   ///
@@ -79,29 +79,26 @@ class Mmap {
     if (map != null) _map = map;
   }
 
-  /// Creates an memory-mapped buffer that is not backed by any file.
+  /// Creates a memory-mapped buffer that is not backed by any file.
   ///
-  /// Anonymous maps can be used as in-memory cache
-  /// or to share memory between process/threads.
+  /// [length]: Explicit length is required anonymous mappings.
   ///
-  /// `int length`: Explicit length is required anonymous mappings.
+  /// [shared]`: Should the map be shareable with other processes.
   ///
-  /// `bool shared`: Should the map be shareable with other processes.
-  ///
-  /// `bool hintForStack`: Hint kernel that an address mapping suitable
+  /// [stack]`: Hint to kernel that an address mapping suitable
   /// for a process or thread stack is needed.
   ///
   Mmap.anonymous({
     required int length,
     bool shared = true,
-    bool hintForStack = false,
+    bool stack = false,
     bool executable = false,
   }) {
     int prots = PROT_READ | PROT_WRITE;
     if (executable) prots |= PROT_EXEC;
 
     int flags = MAP_ANONYMOUS | MAP_SHARED;
-    if (hintForStack) flags |= MAP_STACK;
+    if (stack) flags |= MAP_STACK;
 
     final map = _mmap(null, length, prots, flags, null, 0);
     if (map != null) _map = map;
@@ -111,13 +108,13 @@ class Mmap {
   ///
   /// This constructor closely mirrors Unix's `mmap()` syscall to allow more detailed control.
   ///
-  /// `int? address`: Preffered address for the buffer.
+  /// `address`: Preffered address for the buffer.
   ///
-  /// `int prot`: Memory protection for the mapping.
+  /// `prot`: Memory protection for the mapping.
   ///
-  /// `int flags`: Flags allow fine control over mapping's behavior.
+  /// `flags`: Flags allow fine control over mapping's behavior.
   ///
-  /// `File? fileDesc`: A File object that refers to the source file
+  /// `fileDesc`: A File object that refers to the source file
   ///  (If this map is file-backed).
   ///
   Mmap.custom({
