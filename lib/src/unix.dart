@@ -5,7 +5,7 @@ import 'dart:io';
 import 'dart:typed_data';
 import 'package:stdlibc/stdlibc.dart' as libc;
 
-/// Some commonly used properties.
+/// Some common properties on constructors.
 ///
 /// `String path`: Path to the file that'll be mapped memory.
 ///
@@ -156,6 +156,10 @@ class Mmap {
     if (fd > -1) libc.close(fd);
     return map;
   }
+
+  // void advise() {
+  //   libc.
+  // }
 
   void flush() => libc.sync();
 

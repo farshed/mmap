@@ -1,5 +1,5 @@
 name: mmap
-description: Cross-platform memory mapped IO for Dart
+description: Memory-mapped IO in Dart
 version: 0.0.1
 homepage: https://github.com/farshed/mmap
 
@@ -12,7 +12,6 @@ dependencies:
       sdk: flutter
    plugin_platform_interface: ^2.0.2
    stdlibc: ^0.1.0
-   posix: ^4.0.1
 
 dev_dependencies:
    flutter_test:
