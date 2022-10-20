@@ -1,3 +1,3 @@
 # mmap
 
-Memory-mapped IO in Dart
+Robust memory-mapped I/O in Dart
