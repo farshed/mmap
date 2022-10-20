@@ -54,7 +54,7 @@ class Mmap {
 
   /// Creates a mutable memory-mapped buffer from a file.
   ///
-  /// [copyOnWrite]: By default, any changes to the buffer's content
+  /// [copyOnWrite]: By default, any changes in the buffer's content
   /// are synced and carried through to the underlying file.
   /// Setting [copyOnWrite] to 'true' allows you to edit the buffer
   ///  without causing any changes in the source file.
