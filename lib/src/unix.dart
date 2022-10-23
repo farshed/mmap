@@ -5,6 +5,30 @@ import 'dart:io';
 import 'dart:typed_data';
 import 'package:stdlibc/stdlibc.dart' as libc;
 
+final O_RDWR = libc.O_RDWR;
+final O_RDONLY = libc.O_RDONLY;
+final O_WRONLY = libc.O_WRONLY;
+final O_CREAT = libc.O_CREAT;
+
+final PROT_EXEC = libc.PROT_EXEC;
+final PROT_NONE = libc.PROT_NONE;
+final PROT_READ = libc.PROT_READ;
+final PROT_WRITE = libc.PROT_WRITE;
+
+final MAP_FILE = libc.MAP_FILE;
+final MAP_STACK = libc.MAP_STACK;
+final MAP_FIXED = libc.MAP_FIXED;
+final MAP_SHARED = libc.MAP_SHARED;
+final MAP_LOCKED = libc.MAP_LOCKED;
+final MAP_PRIVATE = libc.MAP_PRIVATE;
+final MAP_POPULATE = libc.MAP_POPULATE;
+final MAP_ANONYMOUS = libc.MAP_ANONYMOUS;
+
+final MS_SYNC = libc.MS_SYNC;
+final MS_ASYNC = libc.MS_ASYNC;
+
+typedef _Mmap = libc.Mmap;
+
 /// A buffer for memory-mapped I/O
 ///
 /// [Mmap] provides easy abstractions for memory-mapped I/O
@@ -20,160 +44,69 @@ import 'package:stdlibc/stdlibc.dart' as libc;
 /// Populates (prefault) page tables for mapping. Defaults to false.
 ///
 /// `bool executable`: Whether buffer memory should be executable.
-///
 class Mmap {
-  static final PROT_EXEC = libc.PROT_EXEC;
-  static final PROT_NONE = libc.PROT_NONE;
-  static final PROT_READ = libc.PROT_READ;
-  static final PROT_WRITE = libc.PROT_WRITE;
+  late int _len;
+  _Mmap? _map;
 
-  static final MAP_FILE = libc.MAP_FILE;
-  static final MAP_STACK = libc.MAP_STACK;
-  static final MAP_FIXED = libc.MAP_FIXED;
-  static final MAP_SHARED = libc.MAP_SHARED;
-  static final MAP_LOCKED = libc.MAP_LOCKED;
-  static final MAP_PRIVATE = libc.MAP_PRIVATE;
-  static final MAP_POPULATE = libc.MAP_POPULATE;
-  static final MAP_ANONYMOUS = libc.MAP_ANONYMOUS;
-
-  /// Creates a read-only memory-mapped buffer from a file.
-  Mmap.readOnly(
-    String path, {
-    int offset = 0,
-    int? length,
-    bool readAhead = false,
-    bool executable = false,
-  }) {
-    final len = length ?? File(path).lengthSync();
-    int prot = PROT_READ;
-    if (executable) prot |= PROT_EXEC;
-
-    int flags = MAP_FILE | MAP_PRIVATE;
-    if (readAhead) flags |= MAP_POPULATE;
-
-    final map = _mmap(null, len, prot, flags, path, offset);
-    if (map != null) _map = map;
-  }
-
-  /// Creates a mutable memory-mapped buffer from a file.
-  ///
-  /// By default, any changes to the buffer's content
-  /// are synced and carried through to the underlying file.
-  /// Setting [copyOnWrite] to [true] allows you to edit the buffer
-  /// without causing any changes in the source file.
-  /// All the changes are instead held in memory/swap space.
-  Mmap.writable(
-    String path, {
-    int offset = 0,
-    int? length,
-    bool readAhead = false,
-    bool executable = false,
-    bool copyOnWrite = false,
-  }) {
-    length ??= File(path).lengthSync();
-    int prot = PROT_READ | PROT_WRITE;
-    if (executable) prot |= PROT_EXEC;
-
-    int flags = MAP_FILE | (copyOnWrite ? MAP_PRIVATE : MAP_SHARED);
-    if (readAhead) flags |= MAP_POPULATE;
-
-    final map = _mmap(null, length, prot, flags, path, offset);
-    if (map != null) _map = map;
-  }
-
-  /// Creates a memory-mapped buffer that is not backed by a file.
-  ///
-  /// [length] defines the size for anonymous buffers. [shared] and [stack]
-  /// properties corresspond to Unix's `MAP_SHARED` and `MAP_STACK`
-  /// flags respectively while [executable] refers to the `PROT_EXEC` directive.
-  Mmap.anonymous({
-    required int length,
-    bool shared = true,
-    bool stack = false,
-    bool executable = false,
-  }) {
-    int prots = PROT_READ | PROT_WRITE;
-    if (executable) prots |= PROT_EXEC;
-
-    int flags = MAP_ANONYMOUS | MAP_SHARED;
-    if (stack) flags |= MAP_STACK;
-
-    final map = _mmap(null, length, prots, flags, null, 0);
-    if (map != null) _map = map;
-  }
-
-  /// Creates a custom memory-mapped buffer.
-  ///
-  /// This constructor closely mirrors Unix's `mmap()` syscall to allow more detailed control.
-  ///
-  /// `address`: Preffered address for the buffer.
-  ///
-  /// `prot`: Memory protection for the mapping.
-  ///
-  /// `flags`: Flags allow fine control over mapping's behavior.
-  ///
-  /// `fileDesc`: A File object that refers to the source file
-  ///  (If this map is file-backed).
-  ///
-  Mmap.custom({
+  Mmap.raw({
     int? address,
     required int length,
     required int prot,
     required int flags,
-    File? fileDesc,
+    int fd = -1,
     int offset = 0,
   }) {
-    final map = _mmap(address, length, prot, flags, fileDesc?.path, offset);
-    if (map != null) _map = map;
-  }
-
-  late int _length;
-  late libc.Mmap _map;
-
-  int get length => _length;
-
-  Pointer<Void> get ptr => Pointer.fromAddress(_map.address);
-
-  libc.Mmap? _mmap(
-      int? addr, int len, int prot, int flags, String? fp, int offset) {
-    final fd = fp == null ? -1 : libc.open(fp, flags: 0);
-    _length = len;
-
-    final map = libc.mmap(
-      address: addr,
+    _len = length;
+    _map = libc.mmap(
+      address: address,
       prot: prot,
       flags: flags,
-      length: len,
-      offset: offset,
+      length: length,
       fd: fd,
+      offset: offset,
     );
-
-    if (fd > -1) libc.close(fd);
-    return map;
+    assert(_map?.address != null, "Failed to create Mmap");
   }
 
+  int get length => _len;
+
+  /// Returns a raw pointer to the newly created memory-mapped buffer
+  Pointer<Void>? get rawPtr =>
+      _map != null ? Pointer.fromAddress(_map!.address) : null;
+
+  /// Coalesce multiple bitflags into a single integer
+  static int coalesceFlags(List<int> flags) {
+    return flags.fold(0, (acc, e) => (acc | e));
+  }
+
+  /// Returns a file descriptor for the given path
+  static int openFile(String path, int? flags) => libc.open(path, flags: flags);
+
+  /// Closes a given file descriptor
+  static void close(int fd) => libc.close(fd);
+
   // void advise() {
-  //   libc.
+  //   libc
   // }
 
   void flush() => libc.sync();
 
-  void close() {
-    libc.munmap(_map);
+  void drop() {
+    if (_map != null) libc.munmap(_map!);
   }
 
   Uint8List asBytes() => asUint8List();
 
-  Uint8List asUint8List() => ptr.cast<Uint8>().asTypedList(_length);
-  Uint16List asUint16List() => ptr.cast<Uint16>().asTypedList(_length ~/ 2);
-  Uint32List asUint32List() => ptr.cast<Uint32>().asTypedList(_length ~/ 4);
-  Uint64List asUint64List() => ptr.cast<Uint64>().asTypedList(_length ~/ 8);
+  Uint8List asUint8List() => rawPtr!.cast<Uint8>().asTypedList(_len);
+  Uint16List asUint16List() => rawPtr!.cast<Uint16>().asTypedList(_len ~/ 2);
+  Uint32List asUint32List() => rawPtr!.cast<Uint32>().asTypedList(_len ~/ 4);
+  Uint64List asUint64List() => rawPtr!.cast<Uint64>().asTypedList(_len ~/ 8);
 
-  Int8List asInt8List() => ptr.cast<Int8>().asTypedList(_length);
-  Int16List asInt16List() => ptr.cast<Int16>().asTypedList(_length ~/ 2);
-  Int32List asInt32List() => ptr.cast<Int32>().asTypedList(_length ~/ 4);
-  Int64List asInt64List() => ptr.cast<Int64>().asTypedList(_length ~/ 8);
+  Int8List asInt8List() => rawPtr!.cast<Int8>().asTypedList(_len);
+  Int16List asInt16List() => rawPtr!.cast<Int16>().asTypedList(_len ~/ 2);
+  Int32List asInt32List() => rawPtr!.cast<Int32>().asTypedList(_len ~/ 4);
+  Int64List asInt64List() => rawPtr!.cast<Int64>().asTypedList(_len ~/ 8);
 
-  Float32List asFloat32List() => ptr.cast<Float>().asTypedList(_length ~/ 4);
-  Float64List asFloat64List() => ptr.cast<Double>().asTypedList(_length ~/ 8);
+  Float32List asFloat32List() => rawPtr!.cast<Float>().asTypedList(_len ~/ 4);
+  Float64List asFloat64List() => rawPtr!.cast<Double>().asTypedList(_len ~/ 8);
 }
