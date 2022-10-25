@@ -65,12 +65,13 @@ class Mmap {
       fd: fd,
       offset: offset,
     );
-    assert(_map?.address != null, "Failed to create Mmap");
+    assert(_map != null, "Failed to create Mmap");
   }
 
+  /// Number of bytes in memory mapping
   int get length => _len;
 
-  /// Returns a raw pointer to the newly created memory-mapped buffer
+  /// A pointer to the newly created memory-mapped buffer
   Pointer<Void>? get rawPtr =>
       _map != null ? Pointer.fromAddress(_map!.address) : null;
 

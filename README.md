@@ -1,5 +1,5 @@
 # mmap
 
-Robust memory-mapped I/O in Dart
+This package provides utilities to work with memory-mapped I/O.
 
 ## Features
